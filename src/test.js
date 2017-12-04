@@ -36,7 +36,7 @@ metronome.audio.onLoaded = function() {
 
   beats.push({time: 0, volume: 1, sound: "click2"});
   for (var i = 0; i < 3; i++) {
-    beats.push({time: 1 + i / 3, volume: 1, sound: "click1"});
+    beats.push({time: 1 + i/3, volume: 1, sound: "click2"});
   }
   beats.push({time: 2});
 
