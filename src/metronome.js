@@ -2,7 +2,7 @@
   global.METRO = {};
 
   build(global.METRO);
-})(this, (function(exports) {
+})(window, (function(exports) {
   let getContext = function() {
     window.AudioContext = window.AudioContext || window.webkitAudioContext;
     return new AudioContext();
@@ -208,7 +208,7 @@
   }
 
   let MAXPLAYING = 500;
-  let FUNCTIONRESOLUTION = 1;
+  let RESOLUTION = 1;
 
   class SchedulerContext {
     constructor(ctx) {
@@ -224,9 +224,9 @@
         false, modifiers));
 
       if (this.playing.length > MAXPLAYING) {
-        clearFinished();
+        this.clearFinished();
         if (this.playing.length > MAXPLAYING) {
-          stopAll();
+          this.stopAll();
 
           throw new Error("Maximum queued beats exceeded.");
         }
@@ -272,22 +272,23 @@
     start() {
       this.scheduler.setReference(0);
 
+      this.beat.reset();
       this._allocateBeats();
     }
 
     _allocateBeats() {
-      let beats = this.beat.gobble(2 * FUNCTIONRESOLUTION);
+      let beats = this.beat.gobble(2 * RESOLUTION);
       let didDelegateRecall = false;
 
       for (let i = 0; i < beats.length; i++) {
-        if (!didDelegateRecall && beats[i].time >= beats[0].time + 0.9 * FUNCTIONRESOLUTION) {
+        if (!didDelegateRecall && beats[i].time >= beats[0].time + 0.9 * RESOLUTION) {
           let that = this;
           this.scheduler.schedulePlay(beats[i].sound, beats[i].time, {onend: function() {
             that._allocateBeats();
-          }});
+          }, volume: beats[i].volume});
           didDelegateRecall = true;
         } else {
-          this.scheduler.schedulePlay(beats[i].sound, beats[i].time);
+          this.scheduler.schedulePlay(beats[i].sound, beats[i].time, {volume: beats[i].volume});
         }
       }
     }
@@ -329,8 +330,8 @@
       }
     }
 
-    stop(id) {
-      this.getPlayers(id).stop();
+    stopPlayer(id) {
+      this.getPlayer(id).stop();
     }
 
     startPlayer(id) {
@@ -353,8 +354,16 @@
       }
     }
 
-    setVolume(vol) {
-      this.context.masterGainNode.gain.value = vol;
+    set volume(vol) {
+      this.audio.masterGainNode.gain.value = vol;
+    }
+
+    get volume() {
+      return this.audio.masterGainNode.gain.value;
+    }
+
+    mute() {
+      this.volume = 0;
     }
 
     addSample(name, url, callback) {
@@ -375,13 +384,22 @@
 
       while (this.lastBeatTime > nextBeat.time - time) {
         nextBeat = this.next();
-        beats.push(nextBeat);
+        if (!nextBeat) break;
+        beats.push(Object.assign({}, nextBeat));
       }
 
       this.lastBeatTime = nextBeat.time;
 
       return beats;
     }
+  }
+
+  function BPMFromInteronset(interonset) {
+    return 60 / interonset;
+  }
+
+  function BPSFromInteronset(interonset) {
+    return 1 / interonset;
   }
 
   function interonsetFromBPM(bpm) {
@@ -393,19 +411,30 @@
   }
 
   function updateFrequencyFromBPM(bpm) {
-    return Math.round(Math.max(FUNCTIONRESOLUTION / interonsetFromBPM(bpm), 1));
+    return Math.round(Math.max(RESOLUTION / interonsetFromBPM(bpm), 1));
   }
 
   function updateFrequencyFromBPS(bps) {
-    return Math.round(Math.max(FUNCTIONRESOLUTION / interonsetFromBPS(bps), 1));
+    return Math.round(Math.max(RESOLUTION / interonsetFromBPS(bps), 1));
   }
 
   class ConstantBeat extends Beat {
-    constructor(bpm, sound) {
+    constructor(config) {
       super();
 
-      this.interonset = interonsetFromBPM(bpm);
-      this.sound = sound;
+      config = config || {};
+
+      if (config.bpm !== undefined) {
+        config.interonset = interonsetFromBPM(config.bpm);
+      } else if (config.bps !== undefined) {
+        config.interonset = interonsetFromBPS(config.bps);
+      }
+
+      this.sound = config.sound;
+
+      this.interonset = config.interonset || 0.5;
+      this.volume = config.volume || 1;
+
 
       this.count = 0;
     }
@@ -416,7 +445,206 @@
 
     next() {
       this.count += 1;
-      return {time: this.interonset * (this.count - 1), sound: this.sound};
+      return {time: this.interonset * (this.count - 1), sound: this.sound, volume: this.volume};
+    }
+
+    get bpm() {
+      return BPMFromInteronset(this.interonset);
+    }
+
+    get bps() {
+      return BPSFromInteronset(this.interonset);
+    }
+
+    set bpm(bpm) {
+      this.interonset = interonsetFromBPM(bpm);
+    }
+
+    set bpm(bps) {
+      this.interonset = interonsetFromBPM(bps);
+    }
+  }
+
+  class ConstantTime extends Beat {
+    constructor(config) {
+      super();
+
+      config = config || {};
+
+      if (config.bpm !== undefined) {
+        config.interonset = interonsetFromBPM(config.bpm);
+      } else if (config.bps !== undefined) {
+        config.interonset = interonsetFromBPS(config.bps);
+      }
+
+      this.normalVolume = config.normalVolume || config.soundVolume || config.volume || 0.5;
+      this.accentVolume = config.accentVolume || config.volume || 1;
+
+      this.normal = config.sound || config.normal;
+      this.accent = config.accent || this.normal;
+
+      this.num = config.count || config.num || 4;
+
+      this.interonset = config.interonset || 0.5;
+
+      this.count = 0;
+    }
+
+    reset() {
+      this.count = 0;
+    }
+
+    next() {
+      this.count += 1;
+      if ((this.count - 1) % this.num === 0) {
+        return {time: this.interonset * (this.count - 1), sound: this.accent, volume: this.accentVolume};
+      } else {
+        return {time: this.interonset * (this.count - 1), sound: this.normal, volume: this.normalVolume};
+      }
+    }
+
+    get bpm() {
+      return BPMFromInteronset(this.interonset);
+    }
+
+    get bps() {
+      return BPSFromInteronset(this.interonset);
+    }
+
+    set bpm(bpm) {
+      this.interonset = interonsetFromBPM(bpm);
+    }
+
+    set bpm(bps) {
+      this.interonset = interonsetFromBPM(bps);
+    }
+  }
+
+  class Rhythm {
+    constructor(beats, _empty = false) {
+      if (!_empty && (!Array.isArray(beats) || (beats.length <= 1))) {
+        throw new Error("There must be at least two beats provided in an array.");
+      }
+
+      this.beats = beats;
+      this.sort();
+    }
+
+    sort() {
+      this.beats.sort((x, y) => Math.sign(x.time - y.time));
+    }
+
+    add(beat) {
+      if (Array.isArray(beat)) {
+        this.beats = this.beats.concat(beat);
+      } else {
+        this.beats.push(beat);
+      }
+
+      this.sort();
+    }
+
+    duration() {
+      return this.beats[this.beats.length - 1].time - this.beats[0].time;
+    }
+
+    count() {
+      return this.beats.length;
+    }
+
+    stretch(f) {
+      for (let i = 0; i < this.beats.length; i++) {
+        this.beats[i].time = this.beats[i].time * f;
+      }
+    }
+
+    squish(f) {
+      this.stretch(1/f);
+    }
+
+    increaseVolume(f) {
+      for (let i = 0; i < this.beats.length; i++) {
+        this.beats[i].volume += f;
+      }
+    }
+
+    decreaseVolume(f) {
+      this.increaseVolume(-f);
+    }
+
+    multiplyVolume(f) {
+      for (let i = 0; i < this.beats.length; i++) {
+        this.beats[i].volume *= f;
+      }
+    }
+
+    divideVolume(f) {
+      this.multiplyVolume(1/f);
+    }
+
+    shift(time) {
+      for (let i = 0; i < this.beats.length; i++) {
+        this.beats[i].time += time;
+      }
+    }
+
+    concat(rhythm) {
+      if (rhythm instanceof RhythmicMotif) {
+        this.beats = this.beats.concat(rhythm);
+      }
+    }
+
+    copy() {
+      let p = new Rhythm([], true);
+
+      for (let i = 0; i < this.beats.length; i++) {
+        p.add(Object.assign({}, this.beats[i]));
+      }
+
+      return p;
+    }
+
+    apply(f, usereturn = true) {
+      for (let i = 0; i < this.beats.length; i++) {
+        if (usereturn) {
+          this.beats[i] = f(this.beats[i]);
+        } else {
+          f(this.beats[i])
+        }
+      }
+    }
+  }
+
+  class GenericBeat extends Beat {
+    constructor(rhythm, loop = true) {
+      super();
+
+      this.rhythm = rhythm.copy();
+      this.loop = loop;
+      this.count = 0;
+
+      this.cycle = 0;
+    }
+
+    reset() {
+      this.rhythm.shift(-this.cycle * this.rhythm.duration());
+
+      this.count = 0;
+      this.cycle = 0;
+    }
+
+    next() {
+      this.count += 1;
+
+      if (this.loop && this.count == this.rhythm.beats.length) {
+        this.count = 1;
+        this.cycle += 1;
+
+        this.rhythm.shift(this.rhythm.duration());
+        return this.rhythm.beats[0];
+      }
+
+      return this.rhythm.beats[this.count - 1];
     }
   }
 
@@ -427,6 +655,9 @@
   exports.Metronome = Metronome;
   exports.Beat = Beat;
   exports.ConstantBeat = ConstantBeat;
+  exports.ConstantTime = ConstantTime;
+  exports.Rhythm = Rhythm;
+  exports.GenericLoop = GenericBeat;
   exports.MAXPLAYING = MAXPLAYING;
-  exports.FUNCTIONRESOLUTION = FUNCTIONRESOLUTION;
+  exports.RESOLUTION = RESOLUTION;
 }));

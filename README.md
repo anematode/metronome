@@ -1,2 +1,2 @@
-# metronome
-A lovely metronome for the web
+# Metronome
+A lovely metronome for the web.
