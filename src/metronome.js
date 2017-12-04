@@ -267,16 +267,22 @@
     constructor(beat, scheduler) {
       this.beat = beat;
       this.scheduler = scheduler;
+
+      this.playing = false;
     }
 
     start() {
+      if (this.playing) return;
       this.scheduler.setReference(0);
 
       this.beat.reset();
       this._allocateBeats();
+      this.playing = true;
     }
 
     _allocateBeats() {
+      this.scheduler.clearFinished();
+
       let beats = this.beat.gobble(2 * RESOLUTION);
       let didDelegateRecall = false;
 
@@ -295,6 +301,7 @@
 
     stop() {
       this.scheduler.stopAll();
+      this.playing = false;
     }
   }
 
@@ -342,9 +349,16 @@
       this.players[id] = undefined;
     }
 
-    startAll() {
-      for (let id in this.players) {
-        this.startPlayer(id);
+    startAll(delay = 0) {
+      if (delay == 0) {
+        for (let id in this.players) {
+          this.startPlayer(id);
+        }
+      } else {
+        let that = this;
+        return setTimeout(function() {
+          that.startAll(0);
+        }, delay * 1000);
       }
     }
 
@@ -391,6 +405,10 @@
       this.lastBeatTime = nextBeat.time;
 
       return beats;
+    }
+
+    _reset() {
+      this.lastBeatTime = 0;
     }
   }
 
@@ -440,6 +458,7 @@
     }
 
     reset() {
+      super._reset();
       this.count = 0;
     }
 
@@ -491,6 +510,7 @@
     }
 
     reset() {
+      super._reset();
       this.count = 0;
     }
 
@@ -615,7 +635,7 @@
     }
   }
 
-  class GenericBeat extends Beat {
+  class GenericLoop extends Beat {
     constructor(rhythm, loop = true) {
       super();
 
@@ -627,6 +647,7 @@
     }
 
     reset() {
+      super._reset();
       this.rhythm.shift(-this.cycle * this.rhythm.duration());
 
       this.count = 0;
@@ -657,7 +678,7 @@
   exports.ConstantBeat = ConstantBeat;
   exports.ConstantTime = ConstantTime;
   exports.Rhythm = Rhythm;
-  exports.GenericLoop = GenericBeat;
+  exports.GenericLoop = GenericLoop;
   exports.MAXPLAYING = MAXPLAYING;
   exports.RESOLUTION = RESOLUTION;
 }));

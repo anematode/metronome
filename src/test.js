@@ -31,5 +31,5 @@ metronome.audio.onLoaded = function() {
   metronome.addBeat(new METRO.GenericLoop(k));
 
   // metronome.addBeat(new METRO.ConstantBeat(200, 'click3'), 'beat3');
-  metronome.startAll();
+  metronome.startAll(1);
 }
