@@ -269,6 +269,17 @@
       this.scheduler = scheduler;
 
       this.playing = false;
+      this.R = {
+        onstart: function() {
+          return;
+        },
+        onstop: function() {
+          return;
+        },
+        onallocate: function(x) {
+          return;
+        },
+      };
     }
 
     start() {
@@ -276,6 +287,7 @@
       this.scheduler.setReference(0);
 
       this.beat.reset();
+      this.R.onstart();
       this._allocateBeats();
       this.playing = true;
     }
@@ -297,11 +309,15 @@
           this.scheduler.schedulePlay(beats[i].sound, beats[i].time, {volume: beats[i].volume});
         }
       }
+
+      this.R.onallocate(beats);
     }
 
     stop() {
       this.scheduler.stopAll();
       this.playing = false;
+
+      this.R.onstop();
     }
   }
 
@@ -312,10 +328,15 @@
       this.audio = context || new MetronomeAudioContext();
 
       this.players = {};
+      this.animator = null;
     }
 
     playerExists(id) {
       return !!this.getPlayer(id);
+    }
+
+    setAnimator(animator) {
+      this.animator = animator;
     }
 
     getPlayer(id) {
@@ -401,6 +422,20 @@
         if (!nextBeat) break;
         beats.push(Object.assign({}, nextBeat));
       }
+
+      this.lastBeatTime = nextBeat.time;
+
+      return beats;
+    }
+
+    gobbleMeasure(max = 500) {
+      let beats = [];
+      let nextBeat = {time: 0};
+
+      do {
+        nextBeat = this.next();
+        beats.push(Object.assign({}, nextBeat));
+      } while (!nextBeat.startMeasure && beats.length < 500);
 
       this.lastBeatTime = nextBeat.time;
 
@@ -635,11 +670,17 @@
     }
   }
 
+  function fixStartMeasure(rhythm) {
+    rhythm.beats[0].startMeasure = true;
+  }
+
   class GenericLoop extends Beat {
     constructor(rhythm, loop = true) {
       super();
 
       this.rhythm = rhythm.copy();
+
+      if (loop) fixStartMeasure(this.rhythm);
       this.loop = loop;
       this.count = 0;
 
@@ -667,6 +708,242 @@
 
       return this.rhythm.beats[this.count - 1];
     }
+
+    copy() {
+      return new GenericLoop(this.rhythm, this.loop);
+    }
+  }
+
+  const Animation = {
+    SIMPLE: 0,
+    LINEAR: 1
+  }
+
+  let getNewAnimationClass = function(x, y) {
+    switch(x) {
+      case Animation.SIMPLE: return new SimpleMetronomeAnimation(y);
+      case Animation.LINEAR: return new LinearMetronomeAnimation(y);
+    }
+  }
+
+  class SimpleMetronomeAnimation {
+    constructor(player) {
+      this.player = player;
+      this.animator = null;
+
+      this.onnext = false;
+      this.active = false;
+      this.startTime = 0;
+      this.allocatedBeats = [];
+      this.lastBeatTime = 0;
+      this.cooldown = 0;
+
+      this.configure({});
+    }
+
+    setAnimator(animator) {
+      this.animator = animator;
+    }
+
+    configure(config) {
+      this.xmin = config.xmin || 0;
+      this.ymin = config.ymin || 0;
+
+      this.xmax = config.xmax || (this.animator ? this.animator.canvas.width : 100);
+      this.ymax = config.ymax || (this.animator ? this.animator.canvas.height : 100);
+
+      this.length = config.length || 2;
+    }
+
+    onstart() {
+      this.allocatedBeats = [];
+      this.lastBeatTime = -1;
+      this.cooldown = 0;
+
+      this.startTime = Date.now();
+      this.active = true;
+    }
+
+    get time() {
+      return (Date.now() - this.startTime) / 1000;
+    }
+
+    clearFinished() {
+      this.allocatedBeats.removeIf(x => (x.time < this.time));
+    }
+
+    onallocate(beats) {
+      this.allocatedBeats = this.allocatedBeats.concat(beats);
+      this.clearFinished();
+    }
+
+    onstop() {
+      this.allocatedBeats = [];
+
+      this.active = false;
+      this.onnext = false;
+    }
+
+    drawClick() {
+      let c = this.animator.ctx;
+      let centerX = (this.xmin + this.xmax) / 2;
+      let centerY = (this.ymin + this.ymax) / 2;
+      let radius = (this.xmax - this.xmin) / 10;
+
+      c.beginPath();
+      c.arc(centerX, centerY, radius, 0, 2 * Math.PI, false);
+      c.fillStyle = 'green';
+      c.fill();
+      c.lineWidth = 5;
+      c.strokeStyle = '#003300';
+      c.stroke();
+    }
+
+    animate() {
+      if (!this.active) return;
+      for (let i = 0; i < this.allocatedBeats.length; i++) {
+        let beat = this.allocatedBeats[i];
+
+        if (beat.time < this.time && beat.time > this.lastBeatTime) {
+          this.lastBeatTime = beat.time;
+          this.cooldown = this.length;
+
+          this.drawClick();
+          return;
+        }
+      }
+
+      if (this.cooldown > 0) {
+        this.cooldown--;
+        this.drawClick();
+      }
+    }
+  }
+
+  class LinearMetronomeAnimation {
+    constructor(player) {
+      this.active = false;
+      this.player = player;
+
+      this.beat = null;
+      this.startTime = 0;
+      this.measureTime = 0;
+      this.animator = null;
+      this.allocatedBeats = [];
+
+      this.configure({});
+    }
+
+    setAnimator(animator) {
+      this.animator = animator;
+    }
+
+    configure(config) {
+      this.xmin = config.xmin || 0;
+      this.ymin = config.ymin || 0;
+
+      this.xmax = config.xmax || (this.animator ? this.animator.canvas.width : 100);
+      this.ymax = config.ymax || (this.animator ? this.animator.canvas.height : 100);
+    }
+
+    onstart() {
+      this.beat = this.player.beat.copy();
+      this.active = true;
+
+      this.startTime = Date.now();
+
+      this.getMeasure();
+    }
+
+    getMeasure() {
+      this.allocatedBeats = this.beat.gobbleMeasure(500);
+    }
+
+    onallocate(d) {
+      return;
+    }
+
+    get time() {
+      return Date.now() - this.startTime;
+    }
+
+    linePos() {
+      if (this.time < this.allocatedBeats[0].time) return -1;
+
+
+    }
+
+    animate() {
+      if (this.allocatedBeats && this.time > this.allocatedBeats[this.allocatedBeats.length - 1].time) this.getMeasure();
+      let lineX = this.linePos();
+    }
+
+    onstop() {
+      this.active = false;
+    }
+  }
+
+  class MetronomeAnimator {
+    constructor(metronome, canvas, ctx) {
+      if (metronome instanceof Metronome) {
+        metronome.setAnimator(this);
+        this.metronome = metronome;
+
+        this.canvas = canvas;
+        this.ctx = ctx || canvas.getContext('2d');
+      } else {
+        throw new Error("First argument must be metronome.");
+      }
+    }
+
+    get players() {
+      return this.metronome.players;
+    }
+
+    getPlayer(id) {
+      return this.metronome.players[id];
+    }
+
+    setupAnimation(id, animationType) {
+      let player = this.getPlayer(id);
+
+      player.R.animationType = animationType;
+      player.R.animation = getNewAnimationClass(animationType, player);
+
+      this._setupAnimation(player);
+      player.R.animation.setAnimator(this);
+    }
+
+    _setupAnimation(player) {
+      player.R.onstart = function() {
+        player.R.animation.onstart();
+      }
+      player.R.onallocate = function(beats) {
+        player.R.animation.onallocate(beats);
+      }
+      player.R.onstop = function() {
+        player.R.animation.onstop();
+      }
+    }
+
+    configureAnimation(id, config) {
+      this.getPlayer(id).R.animation.configure(config);
+    }
+
+    clear() {
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    animate() {
+      this.clear();
+      let player;
+      for (let k in this.players) {
+        player = this.players[k];
+        if (player.R && player.R.animation) {
+          player.R.animation.animate();
+        }
+      }
+    }
   }
 
   exports.BufferLoader = BufferLoader;
@@ -679,6 +956,8 @@
   exports.ConstantTime = ConstantTime;
   exports.Rhythm = Rhythm;
   exports.GenericLoop = GenericLoop;
+  exports.MetronomeAnimator = MetronomeAnimator;
+  exports.Animation = Animation;
   exports.MAXPLAYING = MAXPLAYING;
   exports.RESOLUTION = RESOLUTION;
 }));
