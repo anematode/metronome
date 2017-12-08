@@ -24,47 +24,34 @@ document.getElementById('button').onclick = function() {
   }
 }
 
-let animator = new METRO.MetronomeAnimator(metronome, document.getElementById('metrcanvas'));
-
-metronome.audio.addSample("sounds/click1.wav");
-metronome.audio.addSample("sounds/click2.wav");
-metronome.audio.addSample("sounds/click3.wav");
-metronome.audio.addSample("sounds/accent1.wav");
+metronome.addSample("sounds/kick1.wav", "kick");
+metronome.addSample("sounds/kick2.wav", "lightkick");
+metronome.addSample("sounds/snare1.wav", "snare");
 
 metronome.audio.onLoaded = function() {
-  let beats = [];
+  let beats1 = [];
+  let beats2 = [];
 
-  beats.push({time: 0, volume: 1, sound: "click2"});
-  for (var i = 0; i < 3; i++) {
-    beats.push({time: 1 + i/3, volume: 1, sound: "click2"});
+  for (var i = 0; i <= 8; i++) {
+    beats1.push({time: i / 8, volume: (i % 4 === 0) ? 1 : 2, sound: (i % 4 === 0) ? "kick" : "lightkick"});
   }
-  beats.push({time: 2});
 
-  j = new METRO.Rhythm(beats);
-  k = j.copy();
+  for (var i = 0; i <= 5; i++) {
+    beats2.push({time: i / 5, volume: 1, sound: "snare"});
+  }
 
-  j.squish(4/3);
-  k.apply(function(x) {
-    if (x.sound == "click1") {
-      x.sound = "click3";
-    }
-    if (x.sound == "click2") {
-      x.sound = "accent1";
-    }
-  }, false);
+  j = new METRO.Rhythm(beats1);
+  k = new METRO.Rhythm(beats2);
+  k.stretch(5);
+  j.stretch(5);
 
-  metronome.addBeat(new METRO.GenericLoop(j), 'beat1');
-  metronome.addBeat(new METRO.GenericLoop(k), 'beat2');
 
-  animator.setupAnimation('beat1', METRO.Animation.SIMPLE);
-  animator.configureAnimation('beat1', {xmax: 512, ymax: 512});
-
-  animator.setupAnimation('beat2', METRO.Animation.SIMPLE);
-  animator.configureAnimation('beat2', {xmin: 512, ymin: 0, xmax: 1024, ymax: 512});
+  metronome.addBeat(new METRO.Simple(j), 'beat1');
+  metronome.addBeat(new METRO.Simple(k), 'beat2');
 }
 
 function animate() {
-  animator.animate();
+  // animator.animate();
   requestAnimationFrame(animate);
 }
 
