@@ -72,7 +72,7 @@
     }
 
     _sort() {
-      this.beats.sort((x,y) => Math.sign(x.time - y.time));
+      this.beats.sort((x, y) => Math.sign(x.time - y.time));
     }
 
     repeat(count, copy = false, ret = true) {
@@ -115,6 +115,16 @@
       this.count += rhythm.count;
     }
 
+    boost(factor, copy = false, ret = true) {
+      if (copy) return this.copy().boost(volume, false);
+
+      this.apply(function(y) {
+        if (y.volume !== undefined) y.volume *= factor;
+      });
+
+      if (ret) return this;
+    }
+
     addBeat(...beats) {
       this.beats = this.beats.concat(beats);
 
@@ -132,7 +142,9 @@
 
     gobble(time, min = 1) {
       let beats = [];
-      let nextBeat = {time: 0};
+      let nextBeat = {
+        time: 0
+      };
       let c = 0;
 
       while ((this.lastBeatTime >= nextBeat.time - time) || (c < min)) {
@@ -148,7 +160,9 @@
 
     gobbleMeasure(max = 500) {
       let beats = [];
-      let nextBeat = {time: 0};
+      let nextBeat = {
+        time: 0
+      };
 
       do {
         nextBeat = this.next();
@@ -165,7 +179,7 @@
     }
   }
 
-  class Simple extends Beat {
+  class SimpleLoop extends Beat {
     constructor(rhythm) {
       super();
 
@@ -342,13 +356,22 @@
       name = name || extractFileName(url);
       callback = callback || function(name) {};
 
-      this.samples[name] = {ready: false, buffer: null};
-      this.bufferLoader.addSource({url: url, callback: function(buffer) {
-        that.samples[name] = {ready: true, buffer: buffer};
+      this.samples[name] = {
+        ready: false,
+        buffer: null
+      };
+      this.bufferLoader.addSource({
+        url: url,
+        callback: function(buffer) {
+          that.samples[name] = {
+            ready: true,
+            buffer: buffer
+          };
 
-        if (that.allSamplesReady() && that.onLoaded) that.onLoaded();
-        callback(name);
-      }});
+          if (that.allSamplesReady() && that.onLoaded) that.onLoaded();
+          callback(name);
+        }
+      });
       this.bufferLoader.loadSource();
     }
 
@@ -474,10 +497,77 @@
     }
   }
 
+  /* Format for AutomationTrack:
+
+  {volume: {time: 1, }}
+  */
+
+  let defaultAutomationVolumeTrack = [{
+    time: 0,
+    volume: 1
+  }];
+  let defaultAutomationBPMTrack = [{
+    time: 0,
+    bpm: 120
+  }];
+
+  class AutomationTrack {
+    constructor(keys) {
+      if (keys) {
+        this.volume = keys.volume || defaultAutomationVolumeTrack;
+        this.bpm = keys.bpm || defaultAutomationBPMTrack;
+      } else {
+        this.volume = defaultAutomationVolumeTrack;
+        this.bpm = defaultAutomationBPMTrack;
+      }
+    }
+
+    convertTime(time) {
+      let bpm = this.bpm;
+
+      if (bpm.length === 1) return interonsetFromBPM(bpm[0].bpm) * time;
+      let last = bpm[bpm.length - 1];
+
+      for (let i = 0; i < bpm.length; i++) {
+        if (bpm[i].time >= time) {
+          last = (i > 0) ? bpm[i - 1] : bpm[0];
+          break;
+        }
+      }
+
+      return interonsetFromBPM(last.bpm) * (time - last.time) + last.time / 2;
+    }
+
+    convertVolume(time, volume) {
+      let volumes = this.volume;
+
+      if (volumes.length === 1) return volumes[0].volume * volume;
+      let last = volumes[volumes.length - 1];
+
+      for (let i = 0; i < volumes.length; i++) {
+        if (volumes[i].time >= time) {
+          last = (i > 0) ? volumes[i - 1] : volumes[0];
+          break;
+        }
+      }
+
+      return last.volume * volume;
+    }
+  }
+
+  /*const Interpolation = {
+    LINEAR: 0
+  }*/
+
   class BeatPlayer {
-    constructor(beat, scheduler) {
+    constructor(beat, scheduler, automation) {
       this.beat = beat;
       this.scheduler = scheduler;
+      this.automation = automation;
+
+      if (!this.automation || !(this.automation instanceof AutomationTrack)) {
+        this.automation = new AutomationTrack();
+      }
 
       this.playing = false;
       this.R = {
@@ -508,16 +598,27 @@
 
       let beats = this.beat.gobble(2 * RESOLUTION);
       let didDelegateRecall = false;
+      let that = this;
+      let time, volume;
 
       for (let i = 0; i < beats.length; i++) {
         if (!didDelegateRecall) {
-          let that = this;
-          this.scheduler.schedulePlay(beats[i].sound, beats[i].time, {onend: function() {
-            that._allocateBeats();
-          }, volume: beats[i].volume});
+          time = beats[i].time;
+          volume = beats[i].volume;
+
+          this.scheduler.schedulePlay(beats[i].sound, this.automation.convertTime(time), {
+            onend: function() {
+              that._allocateBeats();
+            },
+            volume: this.automation.convertVolume(time, volume)
+          });
           didDelegateRecall = true;
         } else {
-          this.scheduler.schedulePlay(beats[i].sound, beats[i].time, {volume: beats[i].volume});
+          time = beats[i].time;
+          volume = beats[i].volume;
+          this.scheduler.schedulePlay(beats[i].sound, this.automation.convertTime(time), {
+            volume: this.automation.convertVolume(time, volume)
+          });
         }
       }
 
@@ -554,7 +655,7 @@
       return this.players[id];
     }
 
-    addBeat(beat, id) {
+    addBeat(beat, id, automation) {
       if (beat instanceof Beat) {
         if (!id) {
           id = '__' + defaultBeatNameCount;
@@ -564,8 +665,10 @@
         }
 
         let scheduler = new SchedulerContext(this.audio);
-        let player = new BeatPlayer(beat, scheduler);
+        let player = new BeatPlayer(beat, scheduler, automation);
         this.players[id] = player;
+
+        return player;
       }
     }
 
@@ -665,6 +768,46 @@
     LINEAR: 1
   }
 
+  let utils = {
+    BPMFromInteronset,
+    BPSFromInteronset,
+    interonsetFromBPM,
+    interonsetFromBPS
+  }
+
+  class TimeSignature {
+    constructor(numerator = 4, denominator = 4) {
+      this.num = numerator;
+      this.den = denominator;
+    }
+
+    get length() {
+      return this.num / this.den;
+    }
+
+    get beatLength() {
+      return 1 / this.den;
+    }
+
+    toString() {
+      return this.num + " / " + this.den;
+    }
+
+    rhythm(accent, normal) {
+      if (!normal) normal = accent;
+      if (!accent) accent = normal;
+
+      let k = [];
+      k.push({time: 0, sound: accent, volume: 1});
+
+      for (let i = 1; i < this.num; i++) {
+        k.push({time: i / this.den, sound: normal, volume: 1});
+      }
+
+      return new Rhythm(k, this.length);
+    }
+  }
+
   exports.BufferLoader = BufferLoader;
   exports.MetronomeAudioContext = MetronomeAudioContext;
   exports.SchedulerContext = SchedulerContext;
@@ -673,7 +816,10 @@
   exports.Beat = Beat;
   exports.Rhythm = Rhythm;
   exports.Animation = Animation;
-  exports.Simple = Simple;
+  exports.SimpleLoop = SimpleLoop;
+  exports.AutomationTrack = AutomationTrack;
+  exports.TimeSignature = TimeSignature;
+  exports.utils = utils;
   exports.MAXPLAYING = MAXPLAYING;
   exports.RESOLUTION = RESOLUTION;
 }));
